@@ -1,7 +1,10 @@
 // ============================================================
-// GHAR -- REAL ESTATE PLATFORM
-// Production-Ready Express API Foundation
+// GHAR — REAL ESTATE PLATFORM
+// Production Express API
+// server.js
 // ============================================================
+
+"use strict";
 
 require("dotenv").config();
 
@@ -14,7 +17,7 @@ const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 
 // ============================================================
-// APP CONFIGURATION
+// CONFIG
 // ============================================================
 
 const app = express();
@@ -29,30 +32,45 @@ const IS_PRODUCTION =
 
 const JWT_SECRET =
     process.env.JWT_SECRET ||
-    "development-jwt-secret-change-me";
+    "development-only-change-this-secret";
+
+const JWT_EXPIRES_IN =
+    process.env.JWT_EXPIRES_IN || "7d";
 
 const CLIENT_URL =
     process.env.CLIENT_URL ||
     `http://localhost:${PORT}`;
 
-const JWT_EXPIRES_IN =
-    process.env.JWT_EXPIRES_IN || "7d";
+const DB_POOL_MAX =
+    Number(process.env.DB_POOL_MAX) || 10;
 
 
 // ============================================================
-// SECURITY CHECK
+// PRODUCTION SECURITY CHECK
 // ============================================================
 
-if (
-    IS_PRODUCTION &&
-    (!process.env.JWT_SECRET ||
-        process.env.JWT_SECRET.length < 32)
-) {
-    console.error(
-        "ERROR: A strong JWT_SECRET is required in production."
-    );
+if (IS_PRODUCTION) {
 
-    process.exit(1);
+    if (
+        !process.env.JWT_SECRET ||
+        process.env.JWT_SECRET.length < 32
+    ) {
+
+        console.error(
+            "ERROR: JWT_SECRET must contain at least 32 characters."
+        );
+
+        process.exit(1);
+    }
+
+    if (!process.env.DATABASE_URL) {
+
+        console.error(
+            "ERROR: DATABASE_URL is required in production."
+        );
+
+        process.exit(1);
+    }
 }
 
 
@@ -71,11 +89,14 @@ const pool = new Pool({
             : false,
 
     max:
-        Number(process.env.DB_POOL_MAX) || 10,
+        DB_POOL_MAX,
 
-    idleTimeoutMillis: 30000,
+    idleTimeoutMillis:
+        30000,
 
-    connectionTimeoutMillis: 10000
+    connectionTimeoutMillis:
+        10000
+
 });
 
 
@@ -96,7 +117,7 @@ pool.on("error", error => {
 const allowedOrigins =
     (process.env.CORS_ORIGINS || CLIENT_URL)
         .split(",")
-        .map(origin => origin.trim())
+        .map(value => value.trim())
         .filter(Boolean);
 
 
@@ -105,16 +126,36 @@ app.use(
 
         origin(origin, callback) {
 
-            // Allow server-to-server / same-origin requests
+            // Non-browser / server-to-server request
             if (!origin) {
-                return callback(null, true);
+
+                return callback(
+                    null,
+                    true
+                );
+
             }
 
+            // Development
+            if (!IS_PRODUCTION) {
+
+                return callback(
+                    null,
+                    true
+                );
+
+            }
+
+            // Production whitelist
             if (
-                !IS_PRODUCTION ||
                 allowedOrigins.includes(origin)
             ) {
-                return callback(null, true);
+
+                return callback(
+                    null,
+                    true
+                );
+
             }
 
             return callback(
@@ -122,15 +163,17 @@ app.use(
                     "CORS origin not allowed"
                 )
             );
+
         },
 
         credentials: true
+
     })
 );
 
 
 // ============================================================
-// SECURITY / BODY
+// SECURITY
 // ============================================================
 
 app.use(
@@ -140,6 +183,20 @@ app.use(
 );
 
 app.disable("x-powered-by");
+
+if (IS_PRODUCTION) {
+
+    app.set(
+        "trust proxy",
+        1
+    );
+
+}
+
+
+// ============================================================
+// BODY PARSING
+// ============================================================
 
 app.use(
     express.json({
@@ -159,108 +216,53 @@ app.use(
 // REQUEST LOGGER
 // ============================================================
 
-app.use((req, res, next) => {
+app.use(
+    (req, res, next) => {
 
-    const started =
-        Date.now();
+        const started =
+            Date.now();
 
-    res.on("finish", () => {
+        res.on(
+            "finish",
+            () => {
 
-        const duration =
-            Date.now() - started;
+                const duration =
+                    Date.now() - started;
 
-        console.log(
-            `${new Date().toISOString()} ` +
-            `${req.method} ` +
-            `${req.originalUrl} ` +
-            `${res.statusCode} ` +
-            `${duration}ms`
+                console.log(
+                    `${new Date().toISOString()} ` +
+                    `${req.method} ` +
+                    `${req.originalUrl} ` +
+                    `${res.statusCode} ` +
+                    `${duration}ms`
+                );
+
+            }
         );
 
-    });
+        next();
 
-    next();
-});
-
-
-
-// ============================================================
-// FRONTEND FALLBACK - EXPRESS 5 COMPATIBLE
-// ============================================================
-
-app.get("/{*splat}", (req, res, next) => {
-
-    // Do not return frontend HTML for API requests.
-    if (req.path.startsWith("/api/") || req.path === "/api") {
-        return res.status(404).json({
-            success: false,
-            message: "API endpoint not found"
-        });
     }
+);
 
-    res.sendFile(
-        path.join(__dirname, "index.html"),
-        (error) => {
-            if (error) {
-                next(error);
-            }
+
+// ============================================================
+// STATIC GHAR FRONTEND
+// ============================================================
+
+app.use(
+    express.static(
+        path.join(__dirname),
+        {
+            index: false
         }
-    );
+    )
+);
 
-});
 
 // ============================================================
-// COMMON HELPERS
+// HELPERS
 // ============================================================
-
-function isValidId(value) {
-
-    return (
-        value !== undefined &&
-        value !== null &&
-        String(value).trim() !== "" &&
-        Number.isInteger(Number(value))
-    );
-}
-
-
-function parsePositiveInt(
-    value,
-    fallback
-) {
-
-    const number =
-        Number(value);
-
-    if (
-        !Number.isInteger(number) ||
-        number < 1
-    ) {
-        return fallback;
-    }
-
-    return number;
-}
-
-
-function parseNonNegativeInt(
-    value,
-    fallback = 0
-) {
-
-    const number =
-        Number(value);
-
-    if (
-        !Number.isInteger(number) ||
-        number < 0
-    ) {
-        return fallback;
-    }
-
-    return number;
-}
-
 
 function sendError(
     res,
@@ -270,10 +272,12 @@ function sendError(
 ) {
 
     if (error) {
+
         console.error(
             message,
             error
         );
+
     }
 
     return res.status(status).json({
@@ -281,7 +285,156 @@ function sendError(
         success: false,
 
         message
+
     });
+
+}
+
+
+function isValidId(value) {
+
+    if (
+        value === undefined ||
+        value === null ||
+        String(value).trim() === ""
+    ) {
+
+        return false;
+
+    }
+
+    const number =
+        Number(value);
+
+    return (
+        Number.isInteger(number) &&
+        number > 0
+    );
+
+}
+
+
+function toId(value) {
+
+    return Number(value);
+
+}
+
+
+function positiveNumber(
+    value
+) {
+
+    const number =
+        Number(value);
+
+    if (
+        !Number.isFinite(number) ||
+        number <= 0
+    ) {
+
+        return null;
+
+    }
+
+    return number;
+
+}
+
+
+function optionalPositiveNumber(
+    value
+) {
+
+    if (
+        value === undefined ||
+        value === null ||
+        value === ""
+    ) {
+
+        return null;
+
+    }
+
+    return positiveNumber(value);
+
+}
+
+
+function parseLimit(
+    value,
+    fallback = 20
+) {
+
+    const number =
+        Number(value);
+
+    if (
+        !Number.isInteger(number) ||
+        number < 1
+    ) {
+
+        return fallback;
+
+    }
+
+    return Math.min(
+        number,
+        100
+    );
+
+}
+
+
+function parseOffset(
+    value
+) {
+
+    const number =
+        Number(value);
+
+    if (
+        !Number.isInteger(number) ||
+        number < 0
+    ) {
+
+        return 0;
+
+    }
+
+    return number;
+
+}
+
+
+function cleanString(
+    value,
+    maxLength = 5000
+) {
+
+    if (
+        value === undefined ||
+        value === null
+    ) {
+
+        return null;
+
+    }
+
+    const string =
+        String(value).trim();
+
+    if (!string) {
+
+        return null;
+
+    }
+
+    return string.slice(
+        0,
+        maxLength
+    );
+
 }
 
 
@@ -300,12 +453,15 @@ app.get(
                     "SELECT NOW() AS time"
                 );
 
-            res.json({
+            return res.json({
 
                 success: true,
 
                 service:
                     "GHAR API",
+
+                version:
+                    "3.0.0",
 
                 status:
                     "healthy",
@@ -323,7 +479,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 503,
                 "Database unavailable",
@@ -331,6 +487,7 @@ app.get(
             );
 
         }
+
     }
 );
 
@@ -351,7 +508,7 @@ app.get(
                 "GHAR API",
 
             version:
-                "2.0.0",
+                "3.0.0",
 
             status:
                 "running",
@@ -425,12 +582,14 @@ function authenticateToken(
 
     }
 
+
     const parts =
-        authorization.split(" ");
+        authorization.trim().split(/\s+/);
+
 
     if (
         parts.length !== 2 ||
-        parts[0] !== "Bearer"
+        parts[0].toLowerCase() !== "bearer"
     ) {
 
         return res.status(401).json({
@@ -443,6 +602,7 @@ function authenticateToken(
         });
 
     }
+
 
     try {
 
@@ -469,6 +629,7 @@ function authenticateToken(
         });
 
     }
+
 }
 
 
@@ -495,6 +656,7 @@ function requireAdmin(
 
     }
 
+
     if (
         req.user.role !== "admin"
     ) {
@@ -510,12 +672,14 @@ function requireAdmin(
 
     }
 
+
     next();
+
 }
 
 
 // ============================================================
-// AUTH -- SIGNUP
+// AUTH — SIGNUP
 // ============================================================
 
 app.post(
@@ -533,9 +697,27 @@ app.post(
             } = req.body;
 
 
+            const safeName =
+                cleanString(
+                    name,
+                    150
+                );
+
+            const normalizedEmail =
+                String(email || "")
+                    .trim()
+                    .toLowerCase();
+
+            const safePhone =
+                cleanString(
+                    phone,
+                    30
+                );
+
+
             if (
-                !name ||
-                !email ||
+                !safeName ||
+                !normalizedEmail ||
                 !password
             ) {
 
@@ -567,36 +749,39 @@ app.post(
             }
 
 
-            const normalizedEmail =
-                String(email)
-                    .trim()
-                    .toLowerCase();
-
-
             /*
-             * IMPORTANT:
-             * Users can never create themselves
-             * as admin.
+             * Users can NEVER create an admin
+             * account through public signup.
              */
 
+            const allowedRoles = [
+
+                "buyer",
+                "seller",
+                "tenant",
+                "agent"
+
+            ];
+
+
             const safeRole =
-                [
-                    "buyer",
-                    "seller",
-                    "tenant",
-                    "agent"
-                ].includes(role)
+                allowedRoles.includes(role)
                     ? role
                     : "buyer";
 
 
             const existing =
                 await pool.query(
+
                     `SELECT id
                      FROM users
-                     WHERE LOWER(email) = LOWER($1)
+                     WHERE LOWER(email) = $1
                      LIMIT 1`,
-                    [normalizedEmail]
+
+                    [
+                        normalizedEmail
+                    ]
+
                 );
 
 
@@ -633,10 +818,21 @@ app.post(
                         password_hash,
                         phone,
                         role,
-                        status
+                        status,
+                        created_at,
+                        updated_at
                     )
                     VALUES
-                    ($1,$2,$3,$4,$5,$6)
+                    (
+                        $1,
+                        $2,
+                        $3,
+                        $4,
+                        $5,
+                        'active',
+                        NOW(),
+                        NOW()
+                    )
                     RETURNING
                         id,
                         name,
@@ -647,13 +843,13 @@ app.post(
                         created_at`,
 
                     [
-                        name.trim(),
+                        safeName,
                         normalizedEmail,
                         passwordHash,
-                        phone || null,
-                        safeRole,
-                        "active"
+                        safePhone,
+                        safeRole
                     ]
+
                 );
 
 
@@ -673,6 +869,7 @@ app.post(
 
                         role:
                             user.role
+
                     },
 
                     JWT_SECRET,
@@ -681,10 +878,11 @@ app.post(
                         expiresIn:
                             JWT_EXPIRES_IN
                     }
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -699,7 +897,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to create account",
@@ -707,12 +905,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// AUTH -- LOGIN
+// AUTH — LOGIN
 // ============================================================
 
 app.post(
@@ -721,10 +920,15 @@ app.post(
 
         try {
 
-            const {
-                email,
-                password
-            } = req.body;
+            const email =
+                String(
+                    req.body.email || ""
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const password =
+                req.body.password;
 
 
             if (
@@ -754,16 +958,19 @@ app.post(
                         password_hash,
                         phone,
                         role,
-                        status
+                        status,
+                        created_at
+
                      FROM users
-                     WHERE LOWER(email) = LOWER($1)
+
+                     WHERE LOWER(email) = $1
+
                      LIMIT 1`,
 
                     [
-                        String(email)
-                            .trim()
-                            .toLowerCase()
+                        email
                     ]
+
                 );
 
 
@@ -837,6 +1044,7 @@ app.post(
 
                         role:
                             user.role
+
                     },
 
                     JWT_SECRET,
@@ -845,13 +1053,14 @@ app.post(
                         expiresIn:
                             JWT_EXPIRES_IN
                     }
+
                 );
 
 
             delete user.password_hash;
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -866,7 +1075,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to login",
@@ -874,12 +1083,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// AUTH -- CURRENT USER
+// AUTH — CURRENT USER
 // ============================================================
 
 app.get(
@@ -899,12 +1109,19 @@ app.get(
                         phone,
                         role,
                         status,
-                        created_at
+                        created_at,
+                        updated_at
+
                      FROM users
+
                      WHERE id = $1
+
                      LIMIT 1`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
@@ -924,7 +1141,7 @@ app.get(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -935,7 +1152,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to retrieve user",
@@ -943,12 +1160,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// USERS -- PROFILE
+// USERS — PROFILE
 // ============================================================
 
 app.get(
@@ -968,15 +1186,21 @@ app.get(
                         phone,
                         role,
                         status,
-                        created_at
+                        created_at,
+                        updated_at
+
                      FROM users
+
                      WHERE id = $1`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -987,7 +1211,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load profile",
@@ -995,12 +1219,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// USERS -- UPDATE PROFILE
+// USERS — UPDATE PROFILE
 // ============================================================
 
 app.patch(
@@ -1010,22 +1235,30 @@ app.patch(
 
         try {
 
-            const {
-                name,
-                phone
-            } = req.body;
+            const name =
+                cleanString(
+                    req.body.name,
+                    150
+                );
+
+            const phone =
+                cleanString(
+                    req.body.phone,
+                    30
+                );
 
 
             const result =
                 await pool.query(
 
                     `UPDATE users
+
                      SET
                         name =
-                            COALESCE($1,name),
+                            COALESCE($1, name),
 
                         phone =
-                            COALESCE($2,phone),
+                            COALESCE($2, phone),
 
                         updated_at =
                             NOW()
@@ -1039,17 +1272,35 @@ app.patch(
                         phone,
                         role,
                         status,
-                        created_at`,
+                        created_at,
+                        updated_at`,
 
                     [
-                        name || null,
-                        phone || null,
+                        name,
+                        phone,
                         req.user.id
                     ]
+
                 );
 
 
-            res.json({
+            if (
+                !result.rows.length
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "User not found"
+
+                });
+
+            }
+
+
+            return res.json({
 
                 success: true,
 
@@ -1063,7 +1314,7 @@ app.patch(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update profile",
@@ -1071,12 +1322,13 @@ app.patch(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTIES -- LIST
+// PROPERTIES — PUBLIC LIST
 // ============================================================
 
 app.get(
@@ -1092,32 +1344,29 @@ app.get(
                 state,
                 minPrice,
                 maxPrice,
-                bedrooms,
-                status = "approved"
+                bedrooms
             } = req.query;
 
 
             const limit =
-                Math.min(
-                    parsePositiveInt(
-                        req.query.limit,
-                        20
-                    ),
-                    100
+                parseLimit(
+                    req.query.limit
                 );
 
-
             const offset =
-                parseNonNegativeInt(
+                parseOffset(
                     req.query.offset
                 );
 
 
-            const conditions = [];
+            const conditions = [
+                "status = 'approved'"
+            ];
+
             const values = [];
 
 
-            function add(
+            function addCondition(
                 sql,
                 value
             ) {
@@ -1134,27 +1383,11 @@ app.get(
             }
 
 
-            /*
-             * Public property search should
-             * normally only show approved
-             * properties.
-             */
-
-            if (status) {
-
-                add(
-                    "status = ?",
-                    status
-                );
-
-            }
-
-
             if (type) {
 
-                add(
+                addCondition(
                     "property_type = ?",
-                    type
+                    cleanString(type, 100)
                 );
 
             }
@@ -1162,9 +1395,9 @@ app.get(
 
             if (listingType) {
 
-                add(
+                addCondition(
                     "listing_type = ?",
-                    listingType
+                    cleanString(listingType, 50)
                 );
 
             }
@@ -1172,9 +1405,9 @@ app.get(
 
             if (city) {
 
-                add(
+                addCondition(
                     "LOWER(city) = LOWER(?)",
-                    city
+                    cleanString(city, 100)
                 );
 
             }
@@ -1182,51 +1415,75 @@ app.get(
 
             if (state) {
 
-                add(
+                addCondition(
                     "LOWER(state) = LOWER(?)",
-                    state
+                    cleanString(state, 100)
                 );
 
             }
 
 
-            if (minPrice) {
+            const minimumPrice =
+                optionalPositiveNumber(
+                    minPrice
+                );
 
-                add(
+
+            if (minimumPrice !== null) {
+
+                addCondition(
                     "price >= ?",
-                    Number(minPrice)
+                    minimumPrice
                 );
 
             }
 
 
-            if (maxPrice) {
+            const maximumPrice =
+                optionalPositiveNumber(
+                    maxPrice
+                );
 
-                add(
+
+            if (maximumPrice !== null) {
+
+                addCondition(
                     "price <= ?",
-                    Number(maxPrice)
+                    maximumPrice
                 );
 
             }
 
 
-            if (bedrooms) {
+            const bedroomCount =
+                optionalPositiveNumber(
+                    bedrooms
+                );
 
-                add(
+
+            if (bedroomCount !== null) {
+
+                addCondition(
                     "bedrooms = ?",
-                    Number(bedrooms)
+                    bedroomCount
                 );
 
             }
 
 
             const where =
-                conditions.length
-                    ? `WHERE ${conditions.join(" AND ")}`
-                    : "";
+                `WHERE ${conditions.join(" AND ")}`;
 
+
+            const limitParameter =
+                values.length + 1;
 
             values.push(limit);
+
+
+            const offsetParameter =
+                values.length + 1;
+
             values.push(offset);
 
 
@@ -1234,17 +1491,23 @@ app.get(
                 await pool.query(
 
                     `SELECT *
+
                      FROM properties
+
                      ${where}
+
                      ORDER BY created_at DESC
-                     LIMIT $${values.length - 1}
-                     OFFSET $${values.length}`,
+
+                     LIMIT $${limitParameter}
+
+                     OFFSET $${offsetParameter}`,
 
                     values
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1262,7 +1525,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load properties",
@@ -1270,12 +1533,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTY -- SINGLE
+// PROPERTY — SINGLE
 // ============================================================
 
 app.get(
@@ -1304,15 +1568,20 @@ app.get(
                 await pool.query(
 
                     `SELECT *
+
                      FROM properties
+
                      WHERE id = $1
+                     AND status = 'approved'
+
                      LIMIT 1`,
 
                     [
-                        Number(
+                        toId(
                             req.params.id
                         )
                     ]
+
                 );
 
 
@@ -1332,7 +1601,7 @@ app.get(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1343,7 +1612,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load property",
@@ -1351,12 +1620,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTY -- CREATE
+// PROPERTY — CREATE
 // ============================================================
 
 app.post(
@@ -1367,7 +1637,6 @@ app.post(
         try {
 
             const {
-
                 title,
                 description,
                 propertyType,
@@ -1383,16 +1652,45 @@ app.post(
                 latitude,
                 longitude,
                 images
-
             } = req.body;
 
 
+            const safeTitle =
+                cleanString(
+                    title,
+                    250
+                );
+
+            const safeCity =
+                cleanString(
+                    city,
+                    100
+                );
+
+            const safePropertyType =
+                cleanString(
+                    propertyType,
+                    100
+                );
+
+            const safeListingType =
+                cleanString(
+                    listingType,
+                    50
+                );
+
+            const propertyPrice =
+                positiveNumber(
+                    price
+                );
+
+
             if (
-                !title ||
-                !propertyType ||
-                !listingType ||
-                price === undefined ||
-                !city
+                !safeTitle ||
+                !safePropertyType ||
+                !safeListingType ||
+                propertyPrice === null ||
+                !safeCity
             ) {
 
                 return res.status(400).json({
@@ -1400,11 +1698,22 @@ app.post(
                     success: false,
 
                     message:
-                        "Title, property type, listing type, price and city are required"
+                        "Title, property type, listing type, valid price and city are required"
 
                 });
 
             }
+
+
+            const propertyImages =
+                Array.isArray(images)
+                    ? images
+                        .filter(
+                            image =>
+                                typeof image === "string"
+                        )
+                        .slice(0, 50)
+                    : [];
 
 
             const result =
@@ -1432,62 +1741,85 @@ app.post(
                         created_at,
                         updated_at
                     )
+
                     VALUES
                     (
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                        $11,$12,$13,$14,$15,$16,$17,
-                        NOW(),NOW()
+                        $11,$12,$13,$14,$15,$16,
+                        'pending',
+                        NOW(),
+                        NOW()
                     )
+
                     RETURNING *`,
 
                     [
 
                         req.user.id,
 
-                        title.trim(),
+                        safeTitle,
 
-                        description || null,
+                        cleanString(
+                            description,
+                            10000
+                        ),
 
-                        propertyType,
+                        safePropertyType,
 
-                        listingType,
+                        safeListingType,
 
-                        Number(price),
+                        propertyPrice,
 
-                        bedrooms || null,
+                        optionalPositiveNumber(
+                            bedrooms
+                        ),
 
-                        bathrooms || null,
+                        optionalPositiveNumber(
+                            bathrooms
+                        ),
 
-                        area || null,
+                        optionalPositiveNumber(
+                            area
+                        ),
 
-                        address || null,
+                        cleanString(
+                            address,
+                            500
+                        ),
 
-                        city,
+                        safeCity,
 
-                        state || null,
+                        cleanString(
+                            state,
+                            100
+                        ),
 
-                        pincode || null,
+                        cleanString(
+                            pincode,
+                            20
+                        ),
 
-                        latitude || null,
+                        optionalPositiveNumber(
+                            latitude
+                        ),
 
-                        longitude || null,
+                        optionalPositiveNumber(
+                            longitude
+                        ),
 
-                        Array.isArray(images)
-                            ? images
-                            : [],
-
-                        "pending"
+                        propertyImages
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
                 message:
-                    "Property submitted successfully",
+                    "Property submitted successfully and is awaiting approval",
 
                 property:
                     result.rows[0]
@@ -1496,7 +1828,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to create property",
@@ -1504,12 +1836,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTY -- MY PROPERTIES
+// PROPERTY — MY PROPERTIES
 // ============================================================
 
 app.get(
@@ -1523,15 +1856,21 @@ app.get(
                 await pool.query(
 
                     `SELECT *
+
                      FROM properties
+
                      WHERE owner_id = $1
+
                      ORDER BY created_at DESC`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1542,7 +1881,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load your properties",
@@ -1550,12 +1889,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTY -- UPDATE
+// PROPERTY — UPDATE
 // ============================================================
 
 app.put(
@@ -1582,7 +1922,6 @@ app.put(
 
 
             const {
-
                 title,
                 description,
                 price,
@@ -1594,8 +1933,18 @@ app.put(
                 state,
                 pincode,
                 images
-
             } = req.body;
+
+
+            const safeImages =
+                Array.isArray(images)
+                    ? images
+                        .filter(
+                            image =>
+                                typeof image === "string"
+                        )
+                        .slice(0, 50)
+                    : null;
 
 
             const result =
@@ -1606,37 +1955,49 @@ app.put(
                      SET
 
                         title =
-                            COALESCE($1,title),
+                            COALESCE($1, title),
 
                         description =
-                            COALESCE($2,description),
+                            COALESCE($2, description),
 
                         price =
-                            COALESCE($3,price),
+                            COALESCE($3, price),
 
                         bedrooms =
-                            COALESCE($4,bedrooms),
+                            COALESCE($4, bedrooms),
 
                         bathrooms =
-                            COALESCE($5,bathrooms),
+                            COALESCE($5, bathrooms),
 
                         area =
-                            COALESCE($6,area),
+                            COALESCE($6, area),
 
                         address =
-                            COALESCE($7,address),
+                            COALESCE($7, address),
 
                         city =
-                            COALESCE($8,city),
+                            COALESCE($8, city),
 
                         state =
-                            COALESCE($9,state),
+                            COALESCE($9, state),
 
                         pincode =
-                            COALESCE($10,pincode),
+                            COALESCE($10, pincode),
 
                         images =
-                            COALESCE($11,images),
+                            COALESCE($11, images),
+
+                        /*
+                         * Editing a property sends it back
+                         * through admin approval.
+                         */
+
+                        status =
+                            CASE
+                                WHEN status = 'approved'
+                                THEN 'pending'
+                                ELSE status
+                            END,
 
                         updated_at =
                             NOW()
@@ -1648,39 +2009,62 @@ app.put(
 
                     [
 
-                        title || null,
+                        cleanString(
+                            title,
+                            250
+                        ),
 
-                        description || null,
+                        cleanString(
+                            description,
+                            10000
+                        ),
 
-                        price !== undefined
-                            ? Number(price)
-                            : null,
+                        optionalPositiveNumber(
+                            price
+                        ),
 
-                        bedrooms || null,
+                        optionalPositiveNumber(
+                            bedrooms
+                        ),
 
-                        bathrooms || null,
+                        optionalPositiveNumber(
+                            bathrooms
+                        ),
 
-                        area || null,
+                        optionalPositiveNumber(
+                            area
+                        ),
 
-                        address || null,
+                        cleanString(
+                            address,
+                            500
+                        ),
 
-                        city || null,
+                        cleanString(
+                            city,
+                            100
+                        ),
 
-                        state || null,
+                        cleanString(
+                            state,
+                            100
+                        ),
 
-                        pincode || null,
+                        cleanString(
+                            pincode,
+                            20
+                        ),
 
-                        Array.isArray(images)
-                            ? images
-                            : null,
+                        safeImages,
 
-                        Number(
+                        toId(
                             req.params.id
                         ),
 
                         req.user.id
 
                     ]
+
                 );
 
 
@@ -1700,7 +2084,7 @@ app.put(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1714,7 +2098,7 @@ app.put(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update property",
@@ -1722,12 +2106,13 @@ app.put(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PROPERTY -- DELETE
+// PROPERTY — DELETE
 // ============================================================
 
 app.delete(
@@ -1764,12 +2149,12 @@ app.delete(
                      RETURNING id`,
 
                     [
-                        Number(
+                        toId(
                             req.params.id
                         ),
-
                         req.user.id
                     ]
+
                 );
 
 
@@ -1789,7 +2174,7 @@ app.delete(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1800,7 +2185,7 @@ app.delete(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to delete property",
@@ -1808,12 +2193,13 @@ app.delete(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ENQUIRIES -- CREATE
+// ENQUIRIES — CREATE
 // ============================================================
 
 app.post(
@@ -1823,15 +2209,24 @@ app.post(
 
         try {
 
-            const {
-                propertyId,
-                message,
-                phone
-            } = req.body;
+            const propertyId =
+                req.body.propertyId;
+
+            const message =
+                cleanString(
+                    req.body.message,
+                    5000
+                );
+
+            const phone =
+                cleanString(
+                    req.body.phone,
+                    30
+                );
 
 
             if (
-                !propertyId ||
+                !isValidId(propertyId) ||
                 !message
             ) {
 
@@ -1840,7 +2235,7 @@ app.post(
                     success: false,
 
                     message:
-                        "Property and message are required"
+                        "Valid property ID and message are required"
 
                 });
 
@@ -1850,12 +2245,21 @@ app.post(
             const property =
                 await pool.query(
 
-                    `SELECT id
+                    `SELECT
+                        id,
+                        owner_id,
+                        status
+
                      FROM properties
+
                      WHERE id = $1
+
                      LIMIT 1`,
 
-                    [propertyId]
+                    [
+                        toId(propertyId)
+                    ]
+
                 );
 
 
@@ -1887,27 +2291,28 @@ app.post(
                         status,
                         created_at
                     )
+
                     VALUES
-                    ($1,$2,$3,$4,$5,NOW())
+                    ($1,$2,$3,$4,'new',NOW())
+
                     RETURNING *`,
 
                     [
 
-                        Number(propertyId),
+                        toId(propertyId),
 
                         req.user.id,
 
-                        message.trim(),
+                        message,
 
-                        phone || null,
-
-                        "new"
+                        phone
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -1921,7 +2326,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to submit enquiry",
@@ -1929,12 +2334,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ENQUIRIES -- MY
+// ENQUIRIES — MY
 // ============================================================
 
 app.get(
@@ -1961,11 +2367,14 @@ app.get(
                      ORDER BY
                         e.created_at DESC`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -1976,7 +2385,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load enquiries",
@@ -1984,12 +2393,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// BOOKINGS -- CREATE
+// BOOKINGS — CREATE
 // ============================================================
 
 app.post(
@@ -1999,15 +2409,21 @@ app.post(
 
         try {
 
-            const {
-                propertyId,
-                visitDate,
-                notes
-            } = req.body;
+            const propertyId =
+                req.body.propertyId;
+
+            const visitDate =
+                req.body.visitDate;
+
+            const notes =
+                cleanString(
+                    req.body.notes,
+                    3000
+                );
 
 
             if (
-                !propertyId ||
+                !isValidId(propertyId) ||
                 !visitDate
             ) {
 
@@ -2017,6 +2433,38 @@ app.post(
 
                     message:
                         "Property and visit date are required"
+
+                });
+
+            }
+
+
+            const property =
+                await pool.query(
+
+                    `SELECT id
+                     FROM properties
+                     WHERE id = $1
+                     AND status = 'approved'
+                     LIMIT 1`,
+
+                    [
+                        toId(propertyId)
+                    ]
+
+                );
+
+
+            if (
+                !property.rows.length
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Approved property not found"
 
                 });
 
@@ -2035,27 +2483,28 @@ app.post(
                         status,
                         created_at
                     )
+
                     VALUES
-                    ($1,$2,$3,$4,$5,NOW())
+                    ($1,$2,$3,$4,'pending',NOW())
+
                     RETURNING *`,
 
                     [
 
-                        Number(propertyId),
+                        toId(propertyId),
 
                         req.user.id,
 
                         visitDate,
 
-                        notes || null,
-
-                        "pending"
+                        notes
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -2069,7 +2518,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to create booking",
@@ -2077,12 +2526,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// BOOKINGS -- MY
+// BOOKINGS — MY
 // ============================================================
 
 app.get(
@@ -2109,11 +2559,14 @@ app.get(
                      ORDER BY
                         b.created_at DESC`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2124,7 +2577,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load bookings",
@@ -2132,12 +2585,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PAYMENTS -- CREATE RECORD
+// PAYMENTS — CREATE RECORD
 // ============================================================
 
 app.post(
@@ -2147,15 +2601,26 @@ app.post(
 
         try {
 
-            const {
-                amount,
-                purpose,
-                reference
-            } = req.body;
+            const amount =
+                positiveNumber(
+                    req.body.amount
+                );
+
+            const purpose =
+                cleanString(
+                    req.body.purpose,
+                    200
+                );
+
+            const reference =
+                cleanString(
+                    req.body.reference,
+                    200
+                );
 
 
             if (
-                amount === undefined ||
+                amount === null ||
                 !purpose
             ) {
 
@@ -2164,7 +2629,7 @@ app.post(
                     success: false,
 
                     message:
-                        "Amount and payment purpose are required"
+                        "Valid amount and payment purpose are required"
 
                 });
 
@@ -2183,27 +2648,28 @@ app.post(
                         status,
                         created_at
                     )
+
                     VALUES
-                    ($1,$2,$3,$4,$5,NOW())
+                    ($1,$2,$3,$4,'pending',NOW())
+
                     RETURNING *`,
 
                     [
 
                         req.user.id,
 
-                        Number(amount),
+                        amount,
 
                         purpose,
 
-                        reference || null,
-
-                        "pending"
+                        reference
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -2217,7 +2683,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to create payment",
@@ -2225,12 +2691,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// PAYMENTS -- MY
+// PAYMENTS — MY
 // ============================================================
 
 app.get(
@@ -2244,15 +2711,22 @@ app.get(
                 await pool.query(
 
                     `SELECT *
-                     FROM payments
-                     WHERE user_id = $1
-                     ORDER BY created_at DESC`,
 
-                    [req.user.id]
+                     FROM payments
+
+                     WHERE user_id = $1
+
+                     ORDER BY
+                        created_at DESC`,
+
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2263,7 +2737,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load payments",
@@ -2271,12 +2745,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// DOCUMENTS -- CREATE
+// DOCUMENTS — CREATE
 // ============================================================
 
 app.post(
@@ -2286,11 +2761,23 @@ app.post(
 
         try {
 
-            const {
-                name,
-                fileUrl,
-                documentType
-            } = req.body;
+            const name =
+                cleanString(
+                    req.body.name,
+                    250
+                );
+
+            const fileUrl =
+                cleanString(
+                    req.body.fileUrl,
+                    2000
+                );
+
+            const documentType =
+                cleanString(
+                    req.body.documentType,
+                    100
+                );
 
 
             if (
@@ -2323,8 +2810,10 @@ app.post(
                         status,
                         created_at
                     )
+
                     VALUES
-                    ($1,$2,$3,$4,$5,NOW())
+                    ($1,$2,$3,$4,'submitted',NOW())
+
                     RETURNING *`,
 
                     [
@@ -2335,15 +2824,14 @@ app.post(
 
                         fileUrl,
 
-                        documentType,
-
-                        "submitted"
+                        documentType
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -2357,7 +2845,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to submit document",
@@ -2365,12 +2853,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// DOCUMENTS -- MY
+// DOCUMENTS — MY
 // ============================================================
 
 app.get(
@@ -2384,15 +2873,22 @@ app.get(
                 await pool.query(
 
                     `SELECT *
-                     FROM documents
-                     WHERE user_id = $1
-                     ORDER BY created_at DESC`,
 
-                    [req.user.id]
+                     FROM documents
+
+                     WHERE user_id = $1
+
+                     ORDER BY
+                        created_at DESC`,
+
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2403,7 +2899,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load documents",
@@ -2411,6 +2907,7 @@ app.get(
             );
 
         }
+
     }
 );
 
@@ -2430,15 +2927,22 @@ app.get(
                 await pool.query(
 
                     `SELECT *
-                     FROM notifications
-                     WHERE user_id = $1
-                     ORDER BY created_at DESC`,
 
-                    [req.user.id]
+                     FROM notifications
+
+                     WHERE user_id = $1
+
+                     ORDER BY
+                        created_at DESC`,
+
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2449,7 +2953,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load notifications",
@@ -2457,12 +2961,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// NOTIFICATIONS -- MARK READ
+// NOTIFICATION — MARK READ
 // ============================================================
 
 app.patch(
@@ -2472,10 +2977,27 @@ app.patch(
 
         try {
 
+            if (
+                !isValidId(req.params.id)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid notification ID"
+
+                });
+
+            }
+
+
             const result =
                 await pool.query(
 
                     `UPDATE notifications
+
                      SET
                         is_read = TRUE
 
@@ -2486,13 +3008,14 @@ app.patch(
 
                     [
 
-                        Number(
+                        toId(
                             req.params.id
                         ),
 
                         req.user.id
 
                     ]
+
                 );
 
 
@@ -2512,7 +3035,7 @@ app.patch(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2523,7 +3046,7 @@ app.patch(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update notification",
@@ -2531,12 +3054,13 @@ app.patch(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// SAVED PROPERTIES
+// SAVED PROPERTIES — SAVE
 // ============================================================
 
 app.post(
@@ -2546,9 +3070,8 @@ app.post(
 
         try {
 
-            const {
-                propertyId
-            } = req.body;
+            const propertyId =
+                req.body.propertyId;
 
 
             if (
@@ -2567,11 +3090,37 @@ app.post(
             }
 
 
-            /*
-             * Requires:
-             * saved_properties
-             * (user_id, property_id)
-             */
+            const property =
+                await pool.query(
+
+                    `SELECT id
+                     FROM properties
+                     WHERE id = $1
+                     AND status = 'approved'
+                     LIMIT 1`,
+
+                    [
+                        toId(propertyId)
+                    ]
+
+                );
+
+
+            if (
+                !property.rows.length
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Approved property not found"
+
+                });
+
+            }
+
 
             const result =
                 await pool.query(
@@ -2582,13 +3131,16 @@ app.post(
                         property_id,
                         created_at
                     )
+
                     VALUES
                     ($1,$2,NOW())
+
                     ON CONFLICT
                     (
                         user_id,
                         property_id
                     )
+
                     DO NOTHING
 
                     RETURNING *`,
@@ -2597,13 +3149,14 @@ app.post(
 
                         req.user.id,
 
-                        Number(propertyId)
+                        toId(propertyId)
 
                     ]
+
                 );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 success: true,
 
@@ -2619,7 +3172,7 @@ app.post(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to save property",
@@ -2627,12 +3180,13 @@ app.post(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// SAVED PROPERTIES -- LIST
+// SAVED PROPERTIES — LIST
 // ============================================================
 
 app.get(
@@ -2646,7 +3200,8 @@ app.get(
                 await pool.query(
 
                     `SELECT
-                        sp.*,
+                        sp.id AS saved_id,
+                        sp.created_at AS saved_at,
                         p.*
 
                      FROM saved_properties sp
@@ -2659,11 +3214,14 @@ app.get(
                      ORDER BY
                         sp.created_at DESC`,
 
-                    [req.user.id]
+                    [
+                        req.user.id
+                    ]
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2674,7 +3232,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load saved properties",
@@ -2682,12 +3240,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// SAVED PROPERTIES -- REMOVE
+// SAVED PROPERTIES — REMOVE
 // ============================================================
 
 app.delete(
@@ -2696,6 +3255,22 @@ app.delete(
     async (req, res) => {
 
         try {
+
+            if (
+                !isValidId(req.params.propertyId)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid property ID"
+
+                });
+
+            }
+
 
             await pool.query(
 
@@ -2708,15 +3283,16 @@ app.delete(
 
                     req.user.id,
 
-                    Number(
+                    toId(
                         req.params.propertyId
                     )
 
                 ]
+
             );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2727,7 +3303,7 @@ app.delete(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to remove saved property",
@@ -2735,12 +3311,13 @@ app.delete(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- DASHBOARD
+// ADMIN — DASHBOARD
 // ============================================================
 
 app.get(
@@ -2791,7 +3368,7 @@ app.get(
             ]);
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2833,7 +3410,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load admin dashboard",
@@ -2841,12 +3418,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- USERS
+// ADMIN — USERS
 // ============================================================
 
 app.get(
@@ -2867,7 +3445,8 @@ app.get(
                         phone,
                         role,
                         status,
-                        created_at
+                        created_at,
+                        updated_at
 
                      FROM users
 
@@ -2875,10 +3454,11 @@ app.get(
                         created_at DESC
 
                      LIMIT 500`
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2889,7 +3469,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load users",
@@ -2897,12 +3477,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- PROPERTY LIST
+// ADMIN — PROPERTIES
 // ============================================================
 
 app.get(
@@ -2919,7 +3500,8 @@ app.get(
                     `SELECT
                         p.*,
                         u.name AS owner_name,
-                        u.email AS owner_email
+                        u.email AS owner_email,
+                        u.phone AS owner_phone
 
                      FROM properties p
 
@@ -2930,10 +3512,11 @@ app.get(
                         p.created_at DESC
 
                      LIMIT 500`
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2944,7 +3527,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load admin properties",
@@ -2952,12 +3535,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- PROPERTY STATUS
+// ADMIN — PROPERTY STATUS
 // ============================================================
 
 app.patch(
@@ -2968,26 +3552,36 @@ app.patch(
 
         try {
 
-            const {
-                status
-            } = req.body;
+            if (
+                !isValidId(req.params.id)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid property ID"
+
+                });
+
+            }
 
 
             const allowedStatuses = [
 
                 "pending",
-
                 "approved",
-
                 "rejected",
-
                 "sold",
-
                 "rented",
-
                 "inactive"
 
             ];
+
+
+            const status =
+                req.body.status;
 
 
             if (
@@ -3025,11 +3619,12 @@ app.patch(
 
                         status,
 
-                        Number(
+                        toId(
                             req.params.id
                         )
 
                     ]
+
                 );
 
 
@@ -3049,7 +3644,7 @@ app.patch(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3063,7 +3658,7 @@ app.patch(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update property status",
@@ -3071,12 +3666,13 @@ app.patch(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- ENQUIRIES
+// ADMIN — ENQUIRIES
 // ============================================================
 
 app.get(
@@ -3094,7 +3690,8 @@ app.get(
                         e.*,
                         p.title AS property_title,
                         u.name AS user_name,
-                        u.email AS user_email
+                        u.email AS user_email,
+                        u.phone AS user_phone
 
                      FROM enquiries e
 
@@ -3108,10 +3705,11 @@ app.get(
                         e.created_at DESC
 
                      LIMIT 500`
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3122,7 +3720,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load enquiries",
@@ -3130,12 +3728,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- BOOKINGS
+// ADMIN — BOOKINGS
 // ============================================================
 
 app.get(
@@ -3153,7 +3752,8 @@ app.get(
                         b.*,
                         p.title AS property_title,
                         u.name AS user_name,
-                        u.email AS user_email
+                        u.email AS user_email,
+                        u.phone AS user_phone
 
                      FROM bookings b
 
@@ -3167,10 +3767,11 @@ app.get(
                         b.created_at DESC
 
                      LIMIT 500`
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3181,7 +3782,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load bookings",
@@ -3189,12 +3790,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- UPDATE BOOKING
+// ADMIN — BOOKING STATUS
 // ============================================================
 
 app.patch(
@@ -3205,24 +3807,35 @@ app.patch(
 
         try {
 
-            const {
-                status
-            } = req.body;
+            if (
+                !isValidId(req.params.id)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid booking ID"
+
+                });
+
+            }
 
 
             const allowed = [
 
                 "pending",
-
                 "confirmed",
-
                 "completed",
-
                 "cancelled",
-
                 "rejected"
 
             ];
+
+
+            const status =
+                req.body.status;
 
 
             if (
@@ -3259,11 +3872,12 @@ app.patch(
 
                         status,
 
-                        Number(
+                        toId(
                             req.params.id
                         )
 
                     ]
+
                 );
 
 
@@ -3283,7 +3897,7 @@ app.patch(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3297,7 +3911,7 @@ app.patch(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update booking",
@@ -3305,12 +3919,13 @@ app.patch(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- PAYMENT LIST
+// ADMIN — PAYMENTS
 // ============================================================
 
 app.get(
@@ -3338,10 +3953,11 @@ app.get(
                         p.created_at DESC
 
                      LIMIT 500`
+
                 );
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3352,7 +3968,7 @@ app.get(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to load payments",
@@ -3360,12 +3976,13 @@ app.get(
             );
 
         }
+
     }
 );
 
 
 // ============================================================
-// ADMIN -- UPDATE USER STATUS
+// ADMIN — USER STATUS
 // ============================================================
 
 app.patch(
@@ -3376,22 +3993,34 @@ app.patch(
 
         try {
 
-            const {
-                status
-            } = req.body;
+            if (
+                !isValidId(req.params.id)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid user ID"
+
+                });
+
+            }
 
 
             const allowed = [
 
                 "active",
-
                 "inactive",
-
                 "suspended",
-
                 "blocked"
 
             ];
+
+
+            const status =
+                req.body.status;
 
 
             if (
@@ -3406,6 +4035,28 @@ app.patch(
 
                     message:
                         "Invalid user status"
+
+                });
+
+            }
+
+
+            /*
+             * Prevent an admin from accidentally
+             * disabling their own account.
+             */
+
+            if (
+                Number(req.params.id) ===
+                Number(req.user.id)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "You cannot change your own account status"
 
                 });
 
@@ -3429,17 +4080,20 @@ app.patch(
                         email,
                         phone,
                         role,
-                        status`,
+                        status,
+                        created_at,
+                        updated_at`,
 
                     [
 
                         status,
 
-                        Number(
+                        toId(
                             req.params.id
                         )
 
                     ]
+
                 );
 
 
@@ -3459,7 +4113,7 @@ app.patch(
             }
 
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -3473,7 +4127,7 @@ app.patch(
 
         } catch (error) {
 
-            sendError(
+            return sendError(
                 res,
                 500,
                 "Unable to update user",
@@ -3481,6 +4135,7 @@ app.patch(
             );
 
         }
+
     }
 );
 
@@ -3493,7 +4148,7 @@ app.use(
     "/api",
     (req, res) => {
 
-        res.status(404).json({
+        return res.status(404).json({
 
             success: false,
 
@@ -3522,7 +4177,18 @@ app.use(
         );
 
 
-        res.status(500).json({
+        if (
+            res.headersSent
+        ) {
+
+            return next(error);
+
+        }
+
+
+        return res.status(
+            error.status || 500
+        ).json({
 
             success: false,
 
@@ -3541,20 +4207,47 @@ app.use(
 // FRONTEND FALLBACK
 // ============================================================
 
-app.get(
-    "*",
-    (req, res) => {
+/*
+ * This intentionally uses app.use instead of:
+ *
+ *     app.get("*")
+ *
+ * because Express 5 changed wildcard route
+ * syntax and app.get("*") can throw a PathError.
+ */
 
-        /*
-         * API routes have already been handled above.
-         * Unknown browser routes fall back to index.html.
-         */
+app.use(
+    (req, res, next) => {
 
-        res.sendFile(
+        if (
+            req.method !== "GET" ||
+            req.originalUrl.startsWith("/api/")
+        ) {
+
+            return next();
+
+        }
+
+
+        return res.sendFile(
             path.join(
                 __dirname,
                 "index.html"
-            )
+            ),
+            error => {
+
+                if (error) {
+
+                    console.error(
+                        "Frontend fallback error:",
+                        error
+                    );
+
+                    return next(error);
+
+                }
+
+            }
         );
 
     }
@@ -3586,7 +4279,7 @@ async function startServer() {
 
                     console.log("");
                     console.log(
-                        "=============================================="
+                        "================================================"
                     );
 
                     console.log(
@@ -3594,7 +4287,7 @@ async function startServer() {
                     );
 
                     console.log(
-                        "=============================================="
+                        "================================================"
                     );
 
                     console.log(
@@ -3618,7 +4311,7 @@ async function startServer() {
                     );
 
                     console.log(
-                        "=============================================="
+                        "================================================"
                     );
 
                     console.log("");
@@ -3631,49 +4324,63 @@ async function startServer() {
         // GRACEFUL SHUTDOWN
         // ====================================================
 
-        const shutdown =
-            async signal => {
+        async function shutdown(
+            signal
+        ) {
 
-                console.log(
-                    `${signal} received.`
-                );
+            console.log(
+                `${signal} received. Shutting down...`
+            );
 
 
-                server.close(
-                    async () => {
+            server.close(
+                async error => {
 
-                        try {
+                    if (error) {
 
-                            await pool.end();
-
-                            console.log(
-                                "Database pool closed."
-                            );
-
-                            process.exit(0);
-
-                        } catch (error) {
-
-                            console.error(
-                                error
-                            );
-
-                            process.exit(1);
-
-                        }
+                        console.error(
+                            "Server shutdown error:",
+                            error
+                        );
 
                     }
-                );
-
-            };
 
 
-        process.on(
+                    try {
+
+                        await pool.end();
+
+                        console.log(
+                            "PostgreSQL pool closed."
+                        );
+
+                        process.exit(
+                            error ? 1 : 0
+                        );
+
+                    } catch (dbError) {
+
+                        console.error(
+                            "Database shutdown error:",
+                            dbError
+                        );
+
+                        process.exit(1);
+
+                    }
+
+                }
+            );
+
+        }
+
+
+        process.once(
             "SIGTERM",
             () => shutdown("SIGTERM")
         );
 
-        process.on(
+        process.once(
             "SIGINT",
             () => shutdown("SIGINT")
         );
@@ -3686,7 +4393,7 @@ async function startServer() {
         );
 
         console.error(
-            error.message
+            error
         );
 
         process.exit(1);

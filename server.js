@@ -183,16 +183,31 @@ app.use((req, res, next) => {
 });
 
 
+
 // ============================================================
-// STATIC FRONTEND
+// FRONTEND FALLBACK - EXPRESS 5 COMPATIBLE
 // ============================================================
 
-app.use(
-    express.static(
-        path.join(__dirname)
-    )
-);
+app.get("/{*splat}", (req, res, next) => {
 
+    // Do not return frontend HTML for API requests.
+    if (req.path.startsWith("/api/") || req.path === "/api") {
+        return res.status(404).json({
+            success: false,
+            message: "API endpoint not found"
+        });
+    }
+
+    res.sendFile(
+        path.join(__dirname, "index.html"),
+        (error) => {
+            if (error) {
+                next(error);
+            }
+        }
+    );
+
+});
 
 // ============================================================
 // COMMON HELPERS
